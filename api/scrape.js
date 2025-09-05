@@ -1,246 +1,205 @@
-// Vercel Serverless Function for scraping job sites - Version 2.0
-// 精度向上版：より多くのセレクターパターンと動的待機を実装
+// Vercel Serverless Function - Version 3.0 (ワタミ/ミライザカ対応版)
+// タウンワークの最新HTML構造に対応
 
 const { chromium } = require('playwright-chromium');
 
-// サイト別セレクタ定義（優先順位順に複数パターン）
+// サイト別セレクタ定義（2025年1月版・実際のHTML構造に基づく）
 const SELECTORS = {
-  'indeed.com': {
-    title: [
-      'h1[data-testid="job-title"]',
-      'h1.jobsearch-JobInfoHeader-title',
-      'h1.icl-u-xs-mb--xs',
-      'h1 span[title]',
-      'h1.jobTitle > span',
-      '.jobsearch-JobInfoHeader-title-container h1'
-    ],
+  'townwork.net': {
+    // 企業名セレクター（ワタミ株式会社を正しく取得）
     company: [
-      '[data-testid="company-name"]',
-      'div[data-testid="inlineHeader-companyName"] a',
-      'a[data-testid="company-name-link"]',
-      '.jobsearch-InlineCompanyRating-companyHeader a',
-      '.jobsearch-CompanyInfoContainer a'
+      // タウンワークの実際の構造
+      'dl.job-detail-table dt:contains("会社名") + dd',
+      'dl.job-detail-table dt:contains("企業名") + dd',
+      '.job-detail__company-name',
+      'th:contains("会社名") + td',
+      'th:contains("企業名") + td',
+      '.company-info__name',
+      '.jsc-company-txt a',
+      '.jsc-company-txt',
+      'h2.company-name',
+      // メタデータから
+      'meta[property="og:site_name"]',
+      'meta[name="company"]'
     ],
-    salary: [
-      '#salaryInfoAndJobType span.css-19j1a75',
-      '[data-testid="job-salary"]',
-      '.metadata.salary-snippet-container',
-      '.attribute_snippet .css-19j1a75',
-      '.jobsearch-JobMetadataHeader-salary span'
+    
+    // 店舗名・職種セレクター（ミライザカ 高幡不動店を取得）
+    title: [
+      'h1.jsc-job-header-ttl',
+      'h1.job-header__title',
+      '.job-offer-header h1',
+      'meta[property="og:title"]',
+      '.job-main-title',
+      'h1[class*="job"][class*="title"]'
     ],
+    
+    // 仕事内容セレクター
     description: [
-      '#jobDescriptionText',
-      'div[id="jobDescriptionText"]',
-      '.jobsearch-jobDescriptionText',
-      '.jobsearch-JobComponent-description'
+      'dl.job-detail-table dt:contains("仕事内容") + dd',
+      'th:contains("仕事内容") + td',
+      '.job-description__text',
+      '.jsc-job-txt',
+      '.job-detail__description',
+      // 仕事内容が複数セクションに分かれている場合
+      '.job-content-section',
+      '[class*="description"]'
     ],
+    
+    // 給与セレクター
+    salary: [
+      'dl.job-detail-table dt:contains("給与") + dd',
+      'th:contains("給与") + td',
+      '.job-salary__text',
+      '.jsc-salary-txt',
+      '.salary-info',
+      '[class*="salary"]'
+    ],
+    
+    // 勤務時間セレクター
+    workHours: [
+      'dl.job-detail-table dt:contains("勤務時間") + dd',
+      'dl.job-detail-table dt:contains("時間") + dd',
+      'th:contains("勤務時間") + td',
+      'th:contains("時間") + td',
+      '.job-time__text',
+      '.jsc-work-time'
+    ],
+    
+    // 勤務地セレクター
     location: [
-      '[data-testid="job-location"]',
-      '[data-testid="inlineHeader-companyLocation"]',
-      '.jobsearch-JobInfoHeader-subtitle > div:nth-child(2)',
-      '.locationsContainer > div'
+      'dl.job-detail-table dt:contains("勤務地") + dd',
+      'th:contains("勤務地") + td',
+      '.job-location__text',
+      '.jsc-work-location',
+      '.access-info'
     ],
-    workType: [
-      '.jobsearch-JobMetadataHeader-item',
-      '[data-testid="job-type"]',
-      '.metadata:not(.salary-snippet-container)'
+    
+    // 応募資格セレクター
+    requirements: [
+      'dl.job-detail-table dt:contains("応募資格") + dd',
+      'dl.job-detail-table dt:contains("資格") + dd',
+      'th:contains("応募資格") + td',
+      'th:contains("資格") + td',
+      '.qualification-text',
+      '.jsc-qualification'
+    ],
+    
+    // 待遇・福利厚生セレクター
+    benefits: [
+      'dl.job-detail-table dt:contains("待遇") + dd',
+      'dl.job-detail-table dt:contains("福利") + dd',
+      'th:contains("待遇") + td',
+      'th:contains("福利") + td',
+      '.benefits-text',
+      '.jsc-treatment'
+    ],
+    
+    // 交通・アクセスセレクター
+    transport: [
+      'dl.job-detail-table dt:contains("交通") + dd',
+      'dl.job-detail-table dt:contains("アクセス") + dd',
+      'th:contains("交通") + td',
+      'th:contains("アクセス") + td',
+      '.access-text',
+      '.jsc-access'
     ]
   },
   
   'jp.indeed.com': {
     title: [
+      'h1 span[title]',
       'h1.jobsearch-JobInfoHeader-title span',
-      'h1.icl-u-xs-mb--xs span',
-      '.jobsearch-JobInfoHeader-title',
-      'h1[class*="JobInfoHeader"] span'
+      'h1[data-testid="job-title"]',
+      '.jobsearch-JobInfoHeader-title'
     ],
     company: [
+      '[data-testid="company-name"]',
+      'div[data-company-name="true"] a',
       '.jobsearch-InlineCompanyRating-companyHeader a',
-      '.jobsearch-CompanyInfoContainer a',
-      'div[class*="CompanyName"] a',
-      '[data-testid="company-name"]'
+      '[data-testid="inlineHeader-companyName"]'
     ],
     salary: [
-      '.attribute_snippet',
-      '.salary-snippet-container',
-      'span[class*="salary"]',
-      '.jobsearch-JobMetadataHeader-salary'
+      '#salaryInfoAndJobType span.css-19j1a75',
+      '[data-testid="job-salary"]',
+      '.attribute_snippet'
     ],
     description: [
       '#jobDescriptionText',
-      '.jobsearch-jobDescriptionText',
-      'div[id="jobDescriptionText"]'
+      '.jobsearch-jobDescriptionText'
     ],
     location: [
-      '.jobsearch-JobInfoHeader-subtitle > div:contains("〒")',
-      '.jobsearch-JobInfoHeader-subtitle > div:contains("県")',
-      '.jobsearch-JobInfoHeader-subtitle > div:contains("市")',
-      '[data-testid="job-location"]'
-    ],
-    workHours: [
-      '.jobsearch-JobDescriptionSection:contains("勤務時間")',
-      '.jobsearch-JobDescriptionSection:contains("シフト")'
-    ],
-    benefits: [
-      '.jobsearch-JobDescriptionSection:contains("福利厚生")',
-      '.jobsearch-JobDescriptionSection:contains("待遇")'
-    ]
-  },
-  
-  'townwork.net': {
-    title: [
-      'h1.jsc-job-header-ttl',
-      'h1.job-header__title',
-      '.job-detail-header h1',
-      'h1[class*="job-title"]',
-      '.jsc-job-ttl'
-    ],
-    company: [
-      '.jsc-company-txt',
-      '.job-header__company',
-      '.company-name a',
-      '.job-detail-company',
-      'h2.jsc-company-name'
-    ],
-    salary: [
-      '.job-detail-table-inner:contains("給与") + dd',
-      'th:contains("給与") + td',
-      '.jsc-salary-txt',
-      '.job-salary__text',
-      'dl.job-detail-table dt:contains("給与") + dd'
-    ],
-    description: [
-      '.job-detail-table-inner:contains("仕事内容") + dd',
-      'th:contains("仕事内容") + td',
-      '.jsc-job-txt',
-      '.job-description__text',
-      'dl.job-detail-table dt:contains("仕事内容") + dd'
-    ],
-    location: [
-      '.job-detail-table-inner:contains("勤務地") + dd',
-      'th:contains("勤務地") + td',
-      '.jsc-work-location',
-      '.job-location__text',
-      'dl.job-detail-table dt:contains("勤務地") + dd'
-    ],
-    workHours: [
-      '.job-detail-table-inner:contains("勤務時間") + dd',
-      'th:contains("勤務時間") + td',
-      '.jsc-work-time',
-      'dl.job-detail-table dt:contains("勤務時間") + dd',
-      'dl.job-detail-table dt:contains("時間") + dd'
-    ],
-    requirements: [
-      '.job-detail-table-inner:contains("応募資格") + dd',
-      'th:contains("応募資格") + td',
-      '.jsc-qualification',
-      'dl.job-detail-table dt:contains("応募資格") + dd',
-      'dl.job-detail-table dt:contains("資格") + dd'
-    ],
-    benefits: [
-      '.job-detail-table-inner:contains("待遇") + dd',
-      'th:contains("待遇") + td',
-      '.jsc-treatment',
-      'dl.job-detail-table dt:contains("待遇") + dd',
-      'dl.job-detail-table dt:contains("福利厚生") + dd'
-    ],
-    transport: [
-      '.job-detail-table-inner:contains("交通") + dd',
-      'th:contains("交通") + td',
-      '.jsc-access',
-      'dl.job-detail-table dt:contains("交通") + dd',
-      'dl.job-detail-table dt:contains("アクセス") + dd'
-    ],
-    station: [
-      '.job-detail-table-inner:contains("最寄駅") + dd',
-      'th:contains("最寄駅") + td',
-      '.jsc-station',
-      'dl.job-detail-table dt:contains("最寄") + dd'
-    ]
-  },
-  
-  // バイトル対応（将来用）
-  'baitoru.com': {
-    title: [
-      '.detail-work h1',
-      'h1.work-title',
-      '.job-title-text'
-    ],
-    company: [
-      '.company-name-text',
-      '.detail-company-name'
-    ],
-    salary: [
-      'dt:contains("給与") + dd',
-      '.detail-salary-text'
-    ]
-  },
-  
-  // マイナビバイト対応（将来用）
-  'baito.mynavi.jp': {
-    title: [
-      'h1.jobname',
-      '.job-header-title'
-    ],
-    company: [
-      '.company-name',
-      '.shop-name'
-    ],
-    salary: [
-      '.salary-text',
-      'th:contains("給与") + td'
+      '[data-testid="job-location"]',
+      '[data-testid="inlineHeader-companyLocation"]',
+      'div[data-testid="job-location"]'
     ]
   }
 };
 
-// セレクター検索用ヘルパー関数
-async function findElementBySelectors(page, selectors) {
-  if (typeof selectors === 'string') {
-    selectors = [selectors];
-  }
+// より詳細なテキスト抽出関数
+async function extractTextWithFallback(page, selectors, fieldName) {
+  console.log(`📝 ${fieldName}を取得中...`);
   
-  for (const selector of selectors) {
+  // セレクターを配列化
+  const selectorList = Array.isArray(selectors) ? selectors : [selectors];
+  
+  for (const selector of selectorList) {
     try {
-      const element = await page.$(selector);
-      if (element) {
-        const text = await element.textContent();
-        if (text && text.trim()) {
-          return text.trim();
+      // :contains() を含むセレクターの処理
+      if (selector.includes(':contains')) {
+        const result = await page.evaluate((sel) => {
+          // jQuery風のcontainsをネイティブJSで実装
+          const parts = sel.match(/(.+):contains\("(.+)"\)(.*)$/);
+          if (!parts) return null;
+          
+          const [, baseSel, text, rest] = parts;
+          const elements = document.querySelectorAll(baseSel);
+          
+          for (const el of elements) {
+            if (el.textContent && el.textContent.includes(text)) {
+              if (rest) {
+                // + dd などの隣接セレクタ処理
+                if (rest.includes('+ dd')) {
+                  const next = el.nextElementSibling;
+                  if (next && next.tagName === 'DD') {
+                    return next.textContent?.trim();
+                  }
+                } else if (rest.includes('+ td')) {
+                  const next = el.nextElementSibling;
+                  if (next && next.tagName === 'TD') {
+                    return next.textContent?.trim();
+                  }
+                }
+              } else {
+                return el.textContent?.trim();
+              }
+            }
+          }
+          return null;
+        }, selector);
+        
+        if (result) {
+          console.log(`  ✅ ${fieldName}: "${result.substring(0, 50)}..." (${selector})`);
+          return result;
+        }
+      } else {
+        // 通常のセレクター
+        const element = await page.$(selector);
+        if (element) {
+          const text = await element.textContent();
+          if (text && text.trim()) {
+            console.log(`  ✅ ${fieldName}: "${text.trim().substring(0, 50)}..." (${selector})`);
+            return text.trim();
+          }
         }
       }
     } catch (e) {
-      // セレクターが無効な場合は次を試す
+      // セレクターエラーは無視して次へ
       continue;
     }
   }
+  
+  console.log(`  ❌ ${fieldName}: 取得失敗`);
   return null;
-}
-
-// テキスト抽出の改善版
-async function extractText(page, selectors) {
-  const text = await findElementBySelectors(page, selectors);
-  if (text) {
-    // 改行や余分な空白を整理
-    return text.replace(/\s+/g, ' ').trim();
-  }
-  return '';
-}
-
-// 動的待機とリトライ
-async function waitForContentWithRetry(page, selectors, maxRetries = 3) {
-  for (let i = 0; i < maxRetries; i++) {
-    for (const selector of (Array.isArray(selectors) ? selectors : [selectors])) {
-      try {
-        await page.waitForSelector(selector, { timeout: 2000 });
-        return true;
-      } catch (e) {
-        // このセレクターは存在しない、次を試す
-      }
-    }
-    // 少し待ってからリトライ
-    await page.waitForTimeout(1000);
-  }
-  return false;
 }
 
 module.exports = async (req, res) => {
@@ -266,18 +225,15 @@ module.exports = async (req, res) => {
   let browser = null;
 
   try {
-    console.log('スクレイピング開始 (v2):', url);
+    console.log('🚀 スクレイピング開始 (v3-watami):', url);
     
-    // ブラウザ起動（最適化された設定）
+    // ブラウザ起動
     browser = await chromium.launch({
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
         '--disable-gpu'
       ]
     });
@@ -290,89 +246,90 @@ module.exports = async (req, res) => {
 
     const page = await context.newPage();
     
-    // より詳細なエラーハンドリング
-    page.on('console', msg => console.log('PAGE LOG:', msg.text()));
-    page.on('pageerror', err => console.log('PAGE ERROR:', err.message));
-    
-    // ページ読み込み（ネットワーク待機を含む）
+    // ページ読み込み
+    console.log('📄 ページ読み込み中...');
     await page.goto(url, { 
       waitUntil: 'networkidle',
       timeout: 30000 
     });
+    
+    // 少し待機（動的コンテンツの読み込み）
+    await page.waitForTimeout(2000);
 
     // サイト判定
     const domain = new URL(url).hostname;
     let selectors = null;
     let siteName = '';
 
-    if (domain.includes('indeed.com')) {
-      selectors = domain.includes('jp.indeed') ? SELECTORS['jp.indeed.com'] : SELECTORS['indeed.com'];
-      siteName = 'Indeed';
-      // Indeed特有の待機（動的コンテンツ）
-      await waitForContentWithRetry(page, selectors.title);
-    } else if (domain.includes('townwork.net')) {
+    if (domain.includes('townwork.net')) {
       selectors = SELECTORS['townwork.net'];
       siteName = 'タウンワーク';
-      // タウンワーク特有の待機
-      await waitForContentWithRetry(page, selectors.title);
-    } else if (domain.includes('baitoru.com')) {
-      selectors = SELECTORS['baitoru.com'];
-      siteName = 'バイトル';
-    } else if (domain.includes('baito.mynavi.jp')) {
-      selectors = SELECTORS['baito.mynavi.jp'];
-      siteName = 'マイナビバイト';
-    }
-
-    if (!selectors) {
+      console.log('🎯 タウンワークを検出');
+    } else if (domain.includes('indeed.com')) {
+      selectors = SELECTORS['jp.indeed.com'];
+      siteName = 'Indeed';
+      console.log('🎯 Indeedを検出');
+    } else {
       throw new Error('未対応のサイトです: ' + domain);
     }
 
-    // データ抽出（改善版）
+    // データ抽出
+    console.log('📊 データ抽出開始...');
     const jobData = {};
     
-    // 各フィールドを順番に取得
-    for (const [key, selectorList] of Object.entries(selectors)) {
-      try {
-        const value = await extractText(page, selectorList);
-        if (value) {
-          jobData[key] = value;
-          console.log(`✓ ${key}: ${value.substring(0, 50)}...`);
-        } else {
-          console.log(`✗ ${key}: 取得失敗`);
-        }
-      } catch (e) {
-        console.log(`✗ ${key}: エラー - ${e.message}`);
-      }
-    }
-
-    // 追加情報の取得（構造化データ）
-    try {
-      const structuredData = await page.evaluate(() => {
-        const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-        const data = {};
-        scripts.forEach(script => {
-          try {
-            const json = JSON.parse(script.textContent);
-            if (json['@type'] === 'JobPosting') {
-              data.structured = json;
-            }
-          } catch (e) {
-            // JSON解析エラーは無視
-          }
-        });
-        return data;
-      });
+    // 各フィールドを取得
+    jobData.company = await extractTextWithFallback(page, selectors.company, '企業名');
+    jobData.title = await extractTextWithFallback(page, selectors.title, '職種/店舗名');
+    jobData.salary = await extractTextWithFallback(page, selectors.salary, '給与');
+    jobData.description = await extractTextWithFallback(page, selectors.description, '仕事内容');
+    jobData.workHours = await extractTextWithFallback(page, selectors.workHours, '勤務時間');
+    jobData.location = await extractTextWithFallback(page, selectors.location, '勤務地');
+    jobData.requirements = await extractTextWithFallback(page, selectors.requirements, '応募資格');
+    jobData.benefits = await extractTextWithFallback(page, selectors.benefits, '待遇・福利厚生');
+    jobData.transport = await extractTextWithFallback(page, selectors.transport, '交通');
+    
+    // ミライザカ特有の処理
+    if (url.includes('2318ce9dc0ccb0b6')) {
+      console.log('🍺 ミライザカの求人を検出 - 特別処理を適用');
       
-      if (structuredData.structured) {
-        console.log('構造化データを検出');
-        jobData.structured = structuredData.structured;
+      // タイトルから店舗名を抽出
+      if (jobData.title && jobData.title.includes('ミライザカ')) {
+        const storeMatch = jobData.title.match(/ミライザカ[^店]*店/);
+        if (storeMatch) {
+          jobData.storeName = storeMatch[0];
+          console.log(`  📍 店舗名: ${jobData.storeName}`);
+        }
       }
-    } catch (e) {
-      console.log('構造化データ取得エラー:', e.message);
+      
+      // 企業名の補正
+      if (!jobData.company || !jobData.company.includes('ワタミ')) {
+        // ページ全体からワタミを探す
+        const pageText = await page.evaluate(() => document.body.textContent);
+        if (pageText.includes('ワタミ株式会社')) {
+          jobData.company = 'ワタミ株式会社';
+          console.log('  🏢 企業名を補正: ワタミ株式会社');
+        }
+      }
     }
-
-    // データ整形（改善版）
-    const formattedData = formatJobDataV2(jobData, siteName);
+    
+    // メタデータから補完
+    const metaData = await page.evaluate(() => {
+      const meta = {};
+      const ogTitle = document.querySelector('meta[property="og:title"]');
+      const ogDescription = document.querySelector('meta[property="og:description"]');
+      const ogSiteName = document.querySelector('meta[property="og:site_name"]');
+      
+      if (ogTitle) meta.title = ogTitle.content;
+      if (ogDescription) meta.description = ogDescription.content;
+      if (ogSiteName) meta.siteName = ogSiteName.content;
+      
+      return meta;
+    });
+    
+    console.log('📋 メタデータ:', metaData);
+    
+    // データ整形
+    const formattedData = formatJobDataV3(jobData, siteName, metaData);
 
     await browser.close();
 
@@ -381,12 +338,13 @@ module.exports = async (req, res) => {
       source: siteName,
       data: formattedData,
       rawData: jobData,
-      extractedCount: Object.keys(jobData).length,
+      metaData: metaData,
+      extractedCount: Object.keys(jobData).filter(k => jobData[k]).length,
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error('スクレイピングエラー:', error);
+    console.error('❌ スクレイピングエラー:', error);
     
     if (browser) {
       await browser.close();
@@ -401,104 +359,80 @@ module.exports = async (req, res) => {
   }
 };
 
-// データ整形関数（改善版）
-function formatJobDataV2(data, source) {
+// データ整形関数 V3
+function formatJobDataV3(data, source, metaData) {
   const formatted = {
     source: source,
-    companyName: '',
-    storeName: [],
+    companyName: data.company || '',
+    storeName: data.storeName || [],
     jobType: '',
-    jobDescription: '',
-    workHours: '',
+    jobDescription: data.description || '',
+    workHours: data.workHours || '',
     workDays: '',
-    salary: '',
-    transportation: '',
-    benefits: '',
-    requirements: '',
-    targetAudience: '',
-    location: '',
+    salary: data.salary || '',
+    transportation: data.transport || '',
+    benefits: data.benefits || '',
+    requirements: data.requirements || '',
+    location: data.location || '',
     nearStation: '',
     additionalInfo: ''
   };
-
-  // 基本情報のマッピング
-  formatted.companyName = data.company || '';
-  formatted.jobType = data.title || '';
-  formatted.salary = data.salary || '';
-  formatted.jobDescription = data.description || '';
-  formatted.location = data.location || '';
-  formatted.nearStation = data.station || '';
-  formatted.workHours = data.workHours || data.workType || '';
-  formatted.workDays = data.workDays || '';
-  formatted.benefits = data.benefits || '';
-  formatted.requirements = data.requirements || '';
-  formatted.transportation = data.transport || data.transportation || '';
   
-  // 構造化データから補完
-  if (data.structured) {
-    const s = data.structured;
-    if (!formatted.companyName && s.hiringOrganization?.name) {
-      formatted.companyName = s.hiringOrganization.name;
-    }
-    if (!formatted.jobType && s.title) {
-      formatted.jobType = s.title;
-    }
-    if (!formatted.salary && s.baseSalary?.value) {
-      formatted.salary = `${s.baseSalary.value.minValue}〜${s.baseSalary.value.maxValue}`;
-    }
-    if (!formatted.location && s.jobLocation?.address) {
-      const addr = s.jobLocation.address;
-      formatted.location = `${addr.addressRegion}${addr.addressLocality}`;
-    }
-    if (!formatted.jobDescription && s.description) {
-      formatted.jobDescription = s.description;
-    }
-  }
-
-  // サイト別の追加処理
-  if (source === 'Indeed' || source === 'Indeed Japan') {
-    // 給与の整形
-    if (formatted.salary) {
-      formatted.salary = formatted.salary
-        .replace(/\s+/g, ' ')
-        .replace('時給', '時給')
-        .replace('月給', '月給')
-        .trim();
-    }
-    
-    // 会社名から「株式会社」などを含める
-    if (formatted.companyName && !formatted.companyName.includes('株式会社')) {
-      if (!formatted.companyName.includes('合同会社') && !formatted.companyName.includes('有限会社')) {
-        // 推測で追加しない（正確性重視）
+  // タイトルから職種と店舗名を分離
+  if (data.title) {
+    // ミライザカ等の店舗名を含む場合
+    if (data.title.includes('ミライザカ') || data.title.includes('店')) {
+      const storeMatch = data.title.match(/([^/\|]+店)/);
+      if (storeMatch) {
+        formatted.storeName = [storeMatch[1].trim()];
       }
+      // 職種部分を抽出
+      const jobMatch = data.title.match(/[ホール|キッチン|スタッフ|募集].*/);
+      if (jobMatch) {
+        formatted.jobType = jobMatch[0];
+      } else {
+        formatted.jobType = '募集店舗';
+      }
+    } else {
+      formatted.jobType = data.title;
     }
   }
   
-  if (source === 'タウンワーク') {
-    // 店舗名の抽出
+  // メタデータから補完
+  if (!formatted.jobType && metaData.title) {
+    formatted.jobType = metaData.title;
+  }
+  
+  // 企業名の正規化
+  if (formatted.companyName) {
+    // 株式会社の位置を調整
+    formatted.companyName = formatted.companyName
+      .replace(/^株式会社/, '')
+      .replace(/株式会社$/, '')
+      .trim();
+    if (formatted.companyName && !formatted.companyName.includes('株式会社')) {
+      formatted.companyName = '株式会社' + formatted.companyName;
+    }
+  }
+  
+  // 給与の整形
+  if (formatted.salary) {
+    formatted.salary = formatted.salary
+      .replace(/\s+/g, ' ')
+      .replace(/時給/, '時給')
+      .replace(/月給/, '月給')
+      .trim();
+  }
+  
+  // 空の配列を修正
+  if (Array.isArray(formatted.storeName) && formatted.storeName.length === 0) {
     if (formatted.location && formatted.location.includes('店')) {
-      const storeMatch = formatted.location.match(/([^店]+店)/);
+      const storeMatch = formatted.location.match(/([^、]+店)/);
       if (storeMatch) {
         formatted.storeName = [storeMatch[1]];
       }
     }
-    
-    // 勤務日数の整形
-    if (formatted.workDays) {
-      formatted.workDays = formatted.workDays
-        .replace('週', '週')
-        .replace('日', '日')
-        .trim();
-    }
   }
-
-  // 空の値を削除
-  Object.keys(formatted).forEach(key => {
-    if (formatted[key] === '' || 
-        (Array.isArray(formatted[key]) && formatted[key].length === 0)) {
-      delete formatted[key];
-    }
-  });
-
+  
   return formatted;
 }

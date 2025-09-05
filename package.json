@@ -1,0 +1,16 @@
+{
+  "name": "job-form-scraper",
+  "version": "1.0.0",
+  "description": "求人情報取り込みAPI",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "playwright-core": "^1.40.0",
+    "playwright-chromium": "^1.40.0"
+  },
+  "devDependencies": {
+    "vercel": "^32.0.0"
+  }
+}
